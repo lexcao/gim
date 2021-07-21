@@ -33,7 +33,7 @@ func main() {
 
 func shutdown(err error) {
 	if err != nil {
-		_ = fmt.Errorf("error %s occurs", err)
+		_ = fmt.Errorf("shutdown for error %s occurs", err)
+		os.Exit(1)
 	}
-	os.Exit(1)
 }

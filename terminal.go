@@ -6,7 +6,7 @@ import (
 	"unsafe"
 )
 
-func getTermios(fd uintptr) *syscall.Termios {
+func getTermios(fd uintptr) (*syscall.Termios, syscall.Errno) {
 	var t syscall.Termios
 	_, _, err := syscall.Syscall6(
 		syscall.SYS_IOCTL,
@@ -15,23 +15,17 @@ func getTermios(fd uintptr) *syscall.Termios {
 		uintptr(unsafe.Pointer(&t)),
 		0, 0, 0)
 
-	if err != 0 {
-		panic(err)
-	}
-
-	return &t
+	return &t, err
 }
 
-func setTermios(fd uintptr, term *syscall.Termios) {
+func setTermios(fd uintptr, term *syscall.Termios) syscall.Errno {
 	_, _, err := syscall.Syscall6(
 		syscall.SYS_IOCTL,
 		fd,
 		syscall.TIOCSETAF,
 		uintptr(unsafe.Pointer(term)),
 		0, 0, 0)
-	if err != 0 {
-		panic(err)
-	}
+	return err
 }
 
 func setRaw(term *syscall.Termios) {
@@ -55,13 +49,21 @@ func setRaw(term *syscall.Termios) {
 }
 
 func EnableRawMode() (func(), error) {
+	var err error
 	fd := os.Stdin.Fd()
-	t := getTermios(fd)
+	t, errNo := getTermios(fd)
+	if errNo != 0 {
+		return func() {}, errNo
+	}
+
 	origin := t
 	setRaw(t)
-	setTermios(fd, t)
+	errNo = setTermios(fd, t)
+	if errNo != 0 {
+		return func() {}, errNo
+	}
 
 	return func() {
-		setTermios(fd, origin)
-	}, nil
+		_ = setTermios(fd, origin)
+	}, err
 }
