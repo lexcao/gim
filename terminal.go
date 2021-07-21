@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"os"
 	"syscall"
 	"unsafe"
@@ -66,4 +67,26 @@ func EnableRawMode() (func(), error) {
 	return func() {
 		_ = setTermios(fd, origin)
 	}, err
+}
+
+type winsize struct {
+	Row    uint16
+	Col    uint16
+	Xpixel uint16
+	Ypixel uint16
+}
+
+func GetWindowSize() (int, int) {
+	var ws winsize
+	retCode, _, _ := syscall.Syscall(syscall.SYS_IOCTL,
+		uintptr(syscall.Stdin),
+		uintptr(syscall.TIOCGWINSZ),
+		uintptr(unsafe.Pointer(&ws)))
+
+	if int(retCode) == -1 || ws.Col == 0 {
+		if n, _ := os.Stdout.WriteString("\x1b[999C\x1b[999B"); n == 12 {
+			_, _, _ = bufio.NewReader(os.Stdin).ReadRune()
+		}
+	}
+	return int(ws.Row), int(ws.Col)
 }

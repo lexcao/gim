@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"os"
-	"unicode"
 )
 
 func main() {
@@ -13,27 +10,28 @@ func main() {
 	shutdown(err)
 	defer restore()
 
-	reader := bufio.NewReader(os.Stdin)
+	config := NewConfig()
+	editor := NewEditor(config)
 	for {
-		char, err := reader.ReadByte()
-		if err != nil && err != io.EOF {
-			shutdown(err)
-		}
-
-		if unicode.IsControl(rune(char)) {
-			fmt.Printf("%d\r\n", char)
-		} else {
-			fmt.Printf("%d ('%c')\r\n", char, char)
-		}
-		if char == 'q' {
-			break
-		}
+		editor.RefreshScreen()
+		editor.ProcessKeyPress()
 	}
 }
 
 func shutdown(err error) {
-	if err != nil {
-		_ = fmt.Errorf("shutdown for error %s occurs", err)
-		os.Exit(1)
+	if err == nil {
+		return
 	}
+
+	_ = fmt.Errorf("shutdown for error %s occurs", err)
+
+	exit(1)
+}
+
+func exit(code int) {
+	_, _ = os.Stdout.WriteString(
+		"\x1b[2J" + // clean the screen
+			"\x1b[H") // reposition the cursor
+
+	os.Exit(code)
 }
