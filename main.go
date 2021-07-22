@@ -2,40 +2,73 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 )
 
-type Config struct {
+type EditorConfig struct {
 	originTermios          *syscall.Termios
+	x, y                   int
 	screenRows, screenCols int
 }
 
 var (
-	config = &Config{}
-	w      = bufio.NewWriter(os.Stdin)
+	E        = &EditorConfig{}
+	writeBuf = bufio.NewWriter(os.Stdin)
 )
 
 const (
-	Escape           = "\x1b" // <esc>
-	CleanScreen      = Escape + "[2J"
-	RepositionCursor = Escape + "[H"
-	NewLine          = "\r\n"
-	Tilde            = "~"
-	EmptyLine        = Tilde + NewLine
+	EscapeChar           = '\x1b'
+	Escape               = string(EscapeChar) // <esc>
+	CleanScreen          = Escape + "[2J"
+	CleanLine            = Escape + "[K"
+	CursorReposition     = Escape + "[H"
+	CursorForwardFaraway = Escape + "[999C"
+	CursorDownFaraway    = Escape + "[999B"
+	CursorPosition       = Escape + "[6n"
+	CursorHide           = Escape + "[?25l"
+	CursorShow           = Escape + "[?25h"
+	NewLine              = "\r\n"
+	Tilde                = "~"
+)
+
+const (
+	GimVersion = "0.0.1"
+)
+
+const (
+	ArrowLeft  = iota + 1000 // <esc>[D
+	ArrowRight               // <esc>[C
+	ArrowUp                  // <esc>[A
+	ArrowDown                // <esc>[B
+	HomeKey                  // <esc>[1~ | <esc>[7~ | <esc>[H | <esc>OH
+	DelKey                   // <esc>[3~
+	EndKey                   // <esc>[4~ | <esc>[8~ | <esc>[F | <esc>OF
+	PageUp                   // <esc>[5~
+	PageDown                 // <esc>[6~
 )
 
 func main() {
 	EnableRawMode()
 	defer DisableRawMode()
 
+	initEditor()
+
 	for {
 		editorRefreshScreen()
 		editorProcessKeyPress()
 	}
+}
+
+/* init */
+func initEditor() {
+	E.x, E.y = 0, 0
+	E.screenRows, E.screenCols = GetWindowSize()
 }
 
 /* Editor */
@@ -44,21 +77,78 @@ func ctrlKey(k byte) rune {
 	return rune(k & 0x1f)
 }
 
+func editorMoveCursor(key rune) {
+	switch key {
+	case ArrowDown:
+		if E.x != E.screenCols-1 {
+			E.x++
+		}
+	case ArrowUp:
+		if E.x != 0 {
+			E.x--
+		}
+	case ArrowLeft:
+		if E.y != 0 {
+			E.y--
+		}
+	case ArrowRight:
+		if E.y != E.screenRows-1 {
+			E.y++
+		}
+	}
+}
+
+func editorMapArrowKey(key rune) rune {
+	switch key {
+	case 'A':
+		return ArrowUp
+	case 'B':
+		return ArrowDown
+	case 'C':
+		return ArrowRight
+	case 'D':
+		return ArrowLeft
+
+	}
+	return EscapeChar
+}
+
 func editorDrawRows() {
-	config.screenRows = 5
-	for y := 0; y < config.screenRows; y++ {
-		w.WriteString(EmptyLine)
+	for y := 0; y < E.screenRows; y++ {
+		if y == E.screenRows/3 {
+			welcome := fmt.Sprintf("gim editor -- version %s", GimVersion)
+			if len(welcome) > E.screenCols {
+				welcome = welcome[:E.screenCols]
+			}
+			padding := (E.screenCols - len(welcome)) / 2
+			if padding > 0 {
+				writeBuf.WriteString(Tilde)
+			}
+			for ; padding > 0; padding-- {
+				writeBuf.WriteString(" ")
+			}
+
+			writeBuf.WriteString(welcome)
+		} else {
+			writeBuf.WriteString(Tilde)
+		}
+
+		writeBuf.WriteString(CleanLine)
+		if y < E.screenRows-1 {
+			writeBuf.WriteString(NewLine)
+		}
 	}
 }
 
 func editorRefreshScreen() {
-	w.WriteString(CleanScreen)
-	w.WriteString(RepositionCursor)
+	writeBuf.WriteString(CursorHide)
+	writeBuf.WriteString(CursorReposition)
 
 	editorDrawRows()
 
-	w.WriteString(RepositionCursor)
-	w.Flush()
+	writeBuf.WriteString(move(E.x+1, E.y+1))
+	writeBuf.WriteString(CursorShow)
+	writeBuf.Flush()
 }
 
 func editorProcessKeyPress() {
@@ -67,10 +157,26 @@ func editorProcessKeyPress() {
 	switch c {
 	case ctrlKey('q'):
 		exit(0)
+	case PageUp, PageDown:
+		for times := E.screenRows; times > 0; times-- {
+			if c == PageUp {
+				editorMoveCursor(ArrowUp)
+			} else {
+				editorMoveCursor(ArrowDown)
+			}
+		}
+	case HomeKey:
+		E.x = 0
+	case EndKey:
+		E.x = E.screenCols - 1
+	case DelKey:
+
+	case ArrowUp, ArrowDown, ArrowRight, ArrowLeft:
+		editorMoveCursor(c)
 	}
 }
 
-func editorReadKey() rune {
+func editorReadKey() (char rune) {
 	var (
 		buffer [1]byte
 		size   int
@@ -83,14 +189,75 @@ func editorReadKey() rune {
 
 	maybe(err)
 
-	return rune(buffer[0])
+	char = rune(buffer[0])
+
+	if char != EscapeChar {
+		return
+	}
+
+	// <esc>[
+	return editorReadMoreKey()
+}
+
+func editorReadMoreKey() rune {
+	var buffer [2]byte
+	if size, _ := os.Stdin.Read(buffer[:]); size != 2 {
+		return EscapeChar
+	}
+
+	if buffer[0] == '[' {
+		if buffer[1] >= '0' && buffer[1] <= '9' {
+			var oneMoreByte [1]byte
+			if size, _ := os.Stdin.Read(oneMoreByte[:]); size != 1 {
+				return EscapeChar
+			}
+
+			if oneMoreByte[0] == '~' {
+				switch buffer[1] {
+				case '1':
+					return HomeKey
+				case '3':
+					return DelKey
+				case '4':
+					return EndKey
+				case '5':
+					return PageUp
+				case '6':
+					return PageDown
+				case '7':
+					return HomeKey
+				case '8':
+					return EndKey
+				}
+			}
+
+		} else {
+			switch buffer[1] {
+			case 'A', 'B', 'C', 'D':
+				return editorMapArrowKey(rune(buffer[1]))
+			case 'H':
+				return HomeKey
+			case 'F':
+				return EndKey
+			}
+		}
+	} else if buffer[0] == 'O' {
+		switch buffer[1] {
+		case 'H':
+			return HomeKey
+		case 'F':
+			return EndKey
+		}
+	}
+
+	return EscapeChar
 }
 
 /* Terminal */
 
 func EnableRawMode() {
 	origin := tcGetAttr(syscall.Stdin)
-	config.originTermios = origin
+	E.originTermios = origin
 
 	raw := SetRawTermios(*origin)
 
@@ -98,7 +265,7 @@ func EnableRawMode() {
 }
 
 func DisableRawMode() {
-	tcSetAttr(syscall.Stdin, config.originTermios)
+	tcSetAttr(syscall.Stdin, E.originTermios)
 }
 
 func tcSetAttr(fd int, termios *syscall.Termios) {
@@ -130,6 +297,16 @@ func tcGetAttr(fd int) *syscall.Termios {
 	return termios
 }
 
+func ioctlGetWinSize(ws *WinSize) syscall.Errno {
+	_, _, errNo := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(syscall.Stdout),
+		syscall.TIOCGWINSZ,
+		uintptr(unsafe.Pointer(&ws)),
+	)
+	return errNo
+}
+
 func SetRawTermios(term syscall.Termios) *syscall.Termios {
 	term.Lflag &^= syscall.ECHO | // echo the input
 		syscall.ICANON | // disable canonical mode
@@ -158,27 +335,55 @@ type WinSize struct {
 	Ypixel uint16
 }
 
+func GetCursorPosition() (row int, col int) {
+	// will response <esc>[24;80R
+	exec(CursorPosition)
+
+	buf := strings.Builder{}
+
+	var i int
+	for i < 32 {
+		c := editorReadKey()
+		buf.WriteRune(c)
+		if c == 'R' {
+			break
+		}
+		i++
+	}
+
+	response := buf.String()[2:]
+	fmt.Sscanf(response, "%d;%d", &row, &col)
+
+	//fmt.Printf("\r\n buf: '%q' \r\n", response)
+	//fmt.Printf("row: %d, col: %d", row, col)
+
+	return
+}
+
 func GetWindowSize() (int, int) {
 	var ws WinSize
-	_, _, errNo := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		uintptr(syscall.Stdout),
-		syscall.TIOCGWINSZ,
-		uintptr(unsafe.Pointer(&ws)),
-	)
+	errNo := ioctlGetWinSize(&ws)
 
-	if errNo != 0 {
+	if ws.Col != 0 {
+		return int(ws.Row), int(ws.Col)
+	} else if errNo == 0 {
+		// move cursor to bottom-right corner, then get the position
+		exec(CursorForwardFaraway + CursorDownFaraway)
+		return GetCursorPosition()
+	} else {
+		maybe(errors.New("getWindowSize"))
 		return 0, 0
 	}
-	//if errNo  || ws.Col == 0 {
-	//	if n, _ := os.Stdout.WriteString("\x1b[999C\x1b[999B"); n == 12 {
-	//		_, _, _ = bufio.NewReader(os.Stdin).ReadRune()
-	//	}
-	//}
-	return int(ws.Row), int(ws.Col)
 }
 
 /* Utils */
+func move(x, y int) string {
+	return fmt.Sprintf("%s[%d;%dH", Escape, x, y)
+}
+
+func exec(cmd string) {
+	os.Stdout.WriteString(cmd)
+}
 
 func maybe(err error) {
 	if err == nil {
@@ -191,7 +396,7 @@ func maybe(err error) {
 }
 
 func exit(code int) {
-	_, _ = os.Stdout.WriteString(CleanScreen + RepositionCursor)
+	_, _ = os.Stdout.WriteString(CleanScreen + CursorReposition)
 
 	os.Exit(code)
 }
