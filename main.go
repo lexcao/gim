@@ -11,11 +11,20 @@ import (
 	"unsafe"
 )
 
-type EditorConfig struct {
-	originTermios          *syscall.Termios
-	x, y                   int
-	screenRows, screenCols int
-}
+type (
+	EditorRow struct {
+		size int
+		line string
+	}
+
+	EditorConfig struct {
+		originTermios          *syscall.Termios
+		x, y                   int
+		screenRows, screenCols int
+		numRows                int
+		row                    *EditorRow
+	}
+)
 
 var (
 	E        = &EditorConfig{}
@@ -58,6 +67,7 @@ func main() {
 	defer DisableRawMode()
 
 	initEditor()
+	editorOpen()
 
 	for {
 		editorRefreshScreen()
@@ -69,6 +79,18 @@ func main() {
 func initEditor() {
 	E.x, E.y = 0, 0
 	E.screenRows, E.screenCols = GetWindowSize()
+	E.numRows = 0
+}
+
+/* file io */
+
+func editorOpen() {
+	line := "Hello, world!"
+	E.row = &EditorRow{
+		size: len(line),
+		line: line,
+	}
+	E.numRows = 1
 }
 
 /* Editor */
@@ -115,6 +137,17 @@ func editorMapArrowKey(key rune) rune {
 
 func editorDrawRows() {
 	for y := 0; y < E.screenRows; y++ {
+		if y < E.numRows {
+			line := E.row.line
+
+			if E.row.size > E.screenCols {
+				line = line[:E.screenCols]
+			}
+			writeBuf.WriteString(line)
+			writeBuf.WriteString(NewLine)
+
+			continue
+		}
 		if y == E.screenRows/3 {
 			welcome := fmt.Sprintf("gim editor -- version %s", GimVersion)
 			if len(welcome) > E.screenCols {
@@ -176,7 +209,7 @@ func editorProcessKeyPress() {
 	}
 }
 
-func editorReadKey() (char rune) {
+func readRune() rune {
 	var (
 		buffer [1]byte
 		size   int
@@ -189,7 +222,11 @@ func editorReadKey() (char rune) {
 
 	maybe(err)
 
-	char = rune(buffer[0])
+	return rune(buffer[0])
+}
+
+func editorReadKey() (char rune) {
+	char = readRune()
 
 	if char != EscapeChar {
 		return
@@ -343,7 +380,7 @@ func GetCursorPosition() (row int, col int) {
 
 	var i int
 	for i < 32 {
-		c := editorReadKey()
+		c := readRune()
 		buf.WriteRune(c)
 		if c == 'R' {
 			break
