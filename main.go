@@ -13,16 +13,17 @@ import (
 
 type (
 	EditorRow struct {
-		size int
-		line string
+		line   string
+		render string
 	}
 
 	EditorConfig struct {
 		originTermios          *syscall.Termios
 		x, y                   int
+		renderX                int
 		screenRows, screenCols int
-		numRows                int
-		row                    *EditorRow
+		offRow, offCol         int
+		rows                   []EditorRow
 	}
 )
 
@@ -44,6 +45,8 @@ const (
 	CursorShow           = Escape + "[?25h"
 	NewLine              = "\r\n"
 	Tilde                = "~"
+
+	TabStop = "    "
 )
 
 const (
@@ -67,7 +70,11 @@ func main() {
 	defer DisableRawMode()
 
 	initEditor()
-	editorOpen()
+	if len(os.Args) > 1 {
+		editorOpen(os.Args[1])
+	} else {
+		editorOpen("test.txt")
+	}
 
 	for {
 		editorRefreshScreen()
@@ -77,20 +84,36 @@ func main() {
 
 /* init */
 func initEditor() {
-	E.x, E.y = 0, 0
 	E.screenRows, E.screenCols = GetWindowSize()
-	E.numRows = 0
 }
 
 /* file io */
 
-func editorOpen() {
-	line := "Hello, world!"
-	E.row = &EditorRow{
-		size: len(line),
-		line: line,
+func editorOpen(fileName string) {
+	file, err := os.Open(fileName)
+	maybe(err)
+	defer file.Close()
+
+	var rows []EditorRow
+	reader := bufio.NewReader(file)
+
+	// TODO determine \t is read properly
+	for line, isPrefix, err := reader.ReadLine(); isPrefix || err == nil; {
+		rows = append(rows, EditorRow{line: string(line)})
+		line, isPrefix, err = reader.ReadLine()
 	}
-	E.numRows = 1
+
+	E.rows = rows
+	editorRenderRow()
+}
+
+func editorRenderRow() {
+	for i := 0; i < len(E.rows); i++ {
+		line := E.rows[i].line
+		// TODO verify \t placement works
+		line = strings.ReplaceAll(line, "\t", TabStop)
+		E.rows[i].render = line
+	}
 }
 
 /* Editor */
@@ -99,24 +122,68 @@ func ctrlKey(k byte) rune {
 	return rune(k & 0x1f)
 }
 
+func editorScroll() {
+	E.renderX = 0
+	if row, ok := E.GetCurRow(); ok {
+		E.renderX = X2Render(row, E.x)
+	}
+
+	if E.y < E.offRow {
+		E.offRow = E.y
+	}
+	if E.y >= E.offRow+E.screenRows {
+		E.offRow = E.y - E.screenRows + 1
+	}
+	if E.renderX < E.offCol {
+		E.offCol = E.renderX
+	}
+	if E.renderX >= E.offCol+E.screenCols {
+		E.offCol = E.renderX - E.screenCols + 1
+	}
+}
+
+func (e *EditorConfig) GetCurRow() (row *EditorRow, ok bool) {
+	if ok = e.y < len(e.rows); ok {
+		row = &e.rows[e.y]
+	}
+
+	return
+}
+
 func editorMoveCursor(key rune) {
+	row, ok := E.GetCurRow()
+
 	switch key {
-	case ArrowDown:
-		if E.x != E.screenCols-1 {
-			E.x++
-		}
-	case ArrowUp:
+	case ArrowLeft:
 		if E.x != 0 {
 			E.x--
+		} else if E.y > 0 {
+			// move to the end of the previous line
+			E.y--
+			E.x = len(E.rows[E.y].line)
 		}
-	case ArrowLeft:
+	case ArrowRight:
+		if ok && E.x < len(row.line) {
+			E.x++
+		} else if ok && E.x == len(row.line) {
+			// move to the start of the next line
+			E.y++
+			E.x = 0
+		}
+	case ArrowUp:
 		if E.y != 0 {
 			E.y--
 		}
-	case ArrowRight:
-		if E.y != E.screenRows-1 {
+	case ArrowDown:
+		if E.y < len(E.rows) {
 			E.y++
 		}
+	}
+
+	if row, ok = E.GetCurRow(); ok && E.x > len(row.line) {
+		E.x = len(row.line)
+	} else if !ok {
+		E.x = 0
 	}
 }
 
@@ -137,49 +204,59 @@ func editorMapArrowKey(key rune) rune {
 
 func editorDrawRows() {
 	for y := 0; y < E.screenRows; y++ {
-		if y < E.numRows {
-			line := E.row.line
+		writeBuf.WriteString(CleanLine)
 
-			if E.row.size > E.screenCols {
-				line = line[:E.screenCols]
+		rowIndex := y + E.offRow
+		if rowIndex < len(E.rows) {
+			row := E.rows[rowIndex].render
+			l := len(row)
+			if l > E.screenCols {
+				l = E.screenCols
 			}
-			writeBuf.WriteString(line)
+			// TODO handle moving horizontally
+			row = row[:l]
+
+			writeBuf.WriteString(row)
 			writeBuf.WriteString(NewLine)
-
-			continue
-		}
-		if y == E.screenRows/3 {
-			welcome := fmt.Sprintf("gim editor -- version %s", GimVersion)
-			if len(welcome) > E.screenCols {
-				welcome = welcome[:E.screenCols]
-			}
-			padding := (E.screenCols - len(welcome)) / 2
-			if padding > 0 {
+		} else {
+			if len(E.rows) == 0 && y == E.screenRows/3 {
+				editorDrawWelcome()
+			} else {
 				writeBuf.WriteString(Tilde)
 			}
-			for ; padding > 0; padding-- {
-				writeBuf.WriteString(" ")
+
+			if y < E.screenRows-1 {
+				writeBuf.WriteString(NewLine)
 			}
-
-			writeBuf.WriteString(welcome)
-		} else {
-			writeBuf.WriteString(Tilde)
-		}
-
-		writeBuf.WriteString(CleanLine)
-		if y < E.screenRows-1 {
-			writeBuf.WriteString(NewLine)
 		}
 	}
 }
 
+func editorDrawWelcome() {
+	welcome := fmt.Sprintf("gim editor -- version %s", GimVersion)
+	if len(welcome) > E.screenCols {
+		welcome = welcome[:E.screenCols]
+	}
+	padding := (E.screenCols - len(welcome)) / 2
+	if padding > 0 {
+		writeBuf.WriteString(Tilde)
+	}
+	for ; padding > 0; padding-- {
+		writeBuf.WriteString(" ")
+	}
+
+	writeBuf.WriteString(welcome)
+}
+
 func editorRefreshScreen() {
+	editorScroll()
+
 	writeBuf.WriteString(CursorHide)
 	writeBuf.WriteString(CursorReposition)
 
 	editorDrawRows()
 
-	writeBuf.WriteString(move(E.x+1, E.y+1))
+	writeBuf.WriteString(move(E.y-E.offRow+1, E.renderX-E.offCol+1))
 	writeBuf.WriteString(CursorShow)
 	writeBuf.Flush()
 }
@@ -191,6 +268,15 @@ func editorProcessKeyPress() {
 	case ctrlKey('q'):
 		exit(0)
 	case PageUp, PageDown:
+		if c == PageUp {
+			E.y = E.offRow
+		} else {
+			E.y = E.offRow + E.screenRows - 1
+			if E.y > len(E.rows) {
+				E.y = len(E.rows)
+			}
+		}
+
 		for times := E.screenRows; times > 0; times-- {
 			if c == PageUp {
 				editorMoveCursor(ArrowUp)
@@ -201,7 +287,9 @@ func editorProcessKeyPress() {
 	case HomeKey:
 		E.x = 0
 	case EndKey:
-		E.x = E.screenCols - 1
+		if E.y < len(E.rows) {
+			E.x = len(E.rows[E.y].line)
+		}
 	case DelKey:
 
 	case ArrowUp, ArrowDown, ArrowRight, ArrowLeft:
@@ -366,10 +454,8 @@ func SetRawTermios(term syscall.Termios) *syscall.Termios {
 }
 
 type WinSize struct {
-	Row    uint16
-	Col    uint16
-	Xpixel uint16
-	Ypixel uint16
+	Row uint16
+	Col uint16
 }
 
 func GetCursorPosition() (row int, col int) {
@@ -414,6 +500,17 @@ func GetWindowSize() (int, int) {
 }
 
 /* Utils */
+
+func X2Render(row *EditorRow, x int) int {
+	var render int
+	for j := 0; j < x; j++ {
+		if row.line[j] == '\t' {
+			render += 3
+		}
+		render++
+	}
+	return render
+}
 func move(x, y int) string {
 	return fmt.Sprintf("%s[%d;%dH", Escape, x, y)
 }
