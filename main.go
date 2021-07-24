@@ -24,6 +24,7 @@ type (
 		screenRows, screenCols int
 		offRow, offCol         int
 		rows                   []EditorRow
+		filename               string
 	}
 )
 
@@ -43,6 +44,8 @@ const (
 	CursorPosition       = Escape + "[6n"
 	CursorHide           = Escape + "[?25l"
 	CursorShow           = Escape + "[?25h"
+	ColorInverted        = Escape + "[7m"
+	ColorBack            = Escape + "[m"
 	NewLine              = "\r\n"
 	Tilde                = "~"
 
@@ -73,7 +76,7 @@ func main() {
 	if len(os.Args) > 1 {
 		editorOpen(os.Args[1])
 	} else {
-		editorOpen("test.txt")
+		//editorOpen("test.txt")
 	}
 
 	for {
@@ -85,12 +88,14 @@ func main() {
 /* init */
 func initEditor() {
 	E.screenRows, E.screenCols = GetWindowSize()
+	E.screenRows -= 1
+	E.filename = "[New File]"
 }
 
 /* file io */
 
-func editorOpen(fileName string) {
-	file, err := os.Open(fileName)
+func editorOpen(filename string) {
+	file, err := os.Open(filename)
 	maybe(err)
 	defer file.Close()
 
@@ -104,6 +109,7 @@ func editorOpen(fileName string) {
 	}
 
 	E.rows = rows
+	E.filename = filename
 	editorRenderRow()
 }
 
@@ -217,18 +223,14 @@ func editorDrawRows() {
 			row = row[:l]
 
 			writeBuf.WriteString(row)
-			writeBuf.WriteString(NewLine)
 		} else {
 			if len(E.rows) == 0 && y == E.screenRows/3 {
 				editorDrawWelcome()
 			} else {
 				writeBuf.WriteString(Tilde)
 			}
-
-			if y < E.screenRows-1 {
-				writeBuf.WriteString(NewLine)
-			}
 		}
+		writeBuf.WriteString(NewLine)
 	}
 }
 
@@ -248,6 +250,23 @@ func editorDrawWelcome() {
 	writeBuf.WriteString(welcome)
 }
 
+func editorDrawStatusBar() {
+	writeBuf.WriteString(ColorInverted)
+
+	leftStatus := fmt.Sprintf("%.20s - %d lines", E.filename, len(E.rows))
+	writeBuf.WriteString(leftStatus)
+	rightStatus := fmt.Sprintf("%d/%d", E.y+1, len(E.rows))
+
+	// padding middle
+	for i := len(leftStatus); i < E.screenCols-len(rightStatus); i++ {
+		writeBuf.WriteString(" ")
+	}
+
+	writeBuf.WriteString(rightStatus)
+
+	writeBuf.WriteString(ColorBack)
+}
+
 func editorRefreshScreen() {
 	editorScroll()
 
@@ -255,6 +274,7 @@ func editorRefreshScreen() {
 	writeBuf.WriteString(CursorReposition)
 
 	editorDrawRows()
+	editorDrawStatusBar()
 
 	writeBuf.WriteString(move(E.y-E.offRow+1, E.renderX-E.offCol+1))
 	writeBuf.WriteString(CursorShow)
