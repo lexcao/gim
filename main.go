@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -25,6 +26,7 @@ type (
 		offRow, offCol         int
 		rows                   []EditorRow
 		filename               string
+		statusMessage          string
 	}
 )
 
@@ -79,6 +81,8 @@ func main() {
 		//editorOpen("test.txt")
 	}
 
+	StatusMessage("HELP: Ctrl-q = quit", 5*time.Second)
+
 	for {
 		editorRefreshScreen()
 		editorProcessKeyPress()
@@ -88,7 +92,7 @@ func main() {
 /* init */
 func initEditor() {
 	E.screenRows, E.screenCols = GetWindowSize()
-	E.screenRows -= 1
+	E.screenRows -= 2 // 1 for status bar, 1 for status message
 	E.filename = "[New File]"
 }
 
@@ -263,8 +267,32 @@ func editorDrawStatusBar() {
 	}
 
 	writeBuf.WriteString(rightStatus)
+	writeBuf.WriteString(NewLine)
 
 	writeBuf.WriteString(ColorBack)
+}
+
+func StatusMessage(message string, duration time.Duration) {
+	E.statusMessage = message
+	go func() {
+		select {
+		case <-time.After(duration):
+			E.statusMessage = ""
+		}
+	}()
+}
+
+func editorDrawStatusMessage() {
+	writeBuf.WriteString(CleanLine)
+	l := len(E.statusMessage)
+
+	if l > E.screenCols {
+		l = E.screenCols
+	}
+
+	if l > 0 {
+		writeBuf.WriteString(E.statusMessage[:l])
+	}
 }
 
 func editorRefreshScreen() {
@@ -275,6 +303,7 @@ func editorRefreshScreen() {
 
 	editorDrawRows()
 	editorDrawStatusBar()
+	editorDrawStatusMessage()
 
 	writeBuf.WriteString(move(E.y-E.offRow+1, E.renderX-E.offCol+1))
 	writeBuf.WriteString(CursorShow)
@@ -283,6 +312,7 @@ func editorRefreshScreen() {
 
 func editorProcessKeyPress() {
 	c := editorReadKey()
+	StatusMessage(string(c), 1*time.Second)
 
 	switch c {
 	case ctrlKey('q'):
