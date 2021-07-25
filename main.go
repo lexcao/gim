@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 	"unsafe"
 )
 
@@ -124,7 +125,12 @@ func editorOpen(filename string) {
 
 func editorSave() {
 	if E.filename == EmptyFile {
-		return
+		filename := editorPrompt("Save as: ")
+		if filename == EmptyFile {
+			StatusMessage("Save aborted", 3*time.Second)
+			return
+		}
+		E.filename = filename
 	}
 
 	file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -243,6 +249,30 @@ func editorMapArrowKey(key rune) rune {
 
 	}
 	return EscapeChar
+}
+
+func editorPrompt(prompt string) string {
+	var buffer strings.Builder
+
+	for {
+		StatusMessage(prompt+buffer.String(), 10*time.Second)
+		editorRefreshScreen()
+
+		char := editorReadKey()
+		if char == Enter {
+			StatusMessage("", 1*time.Second)
+			return buffer.String()
+		} else if char == DelKey || char == ctrlKey('h') || char == Backspace {
+			last := buffer.String()[:buffer.Len()-1]
+			buffer = strings.Builder{}
+			buffer.WriteString(last)
+		} else if char == EscapeChar {
+			StatusMessage("", 1*time.Second)
+			return EmptyFile
+		} else if !unicode.IsControl(char) && char < 128 {
+			buffer.WriteRune(char)
+		}
+	}
 }
 
 func editorInsertRow(at int, line string) {
