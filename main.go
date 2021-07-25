@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -25,6 +26,7 @@ type (
 		screenRows, screenCols int
 		offRow, offCol         int
 		rows                   []EditorRow
+		dirty                  bool
 		filename               string
 		statusMessage          string
 	}
@@ -56,9 +58,12 @@ const (
 
 const (
 	GimVersion = "0.0.1"
+	EmptyFile  = "[New File]"
 )
 
 const (
+	Enter      = '\r'
+	Backspace  = 127
 	ArrowLeft  = iota + 1000 // <esc>[D
 	ArrowRight               // <esc>[C
 	ArrowUp                  // <esc>[A
@@ -81,7 +86,7 @@ func main() {
 		//editorOpen("test.txt")
 	}
 
-	StatusMessage("HELP: Ctrl-q = quit", 5*time.Second)
+	StatusMessage("HELP: Ctrl-s = save | Ctrl-q = quit", 5*time.Second)
 
 	for {
 		editorRefreshScreen()
@@ -93,7 +98,7 @@ func main() {
 func initEditor() {
 	E.screenRows, E.screenCols = GetWindowSize()
 	E.screenRows -= 2 // 1 for status bar, 1 for status message
-	E.filename = "[New File]"
+	E.filename = EmptyFile
 }
 
 /* file io */
@@ -114,16 +119,44 @@ func editorOpen(filename string) {
 
 	E.rows = rows
 	E.filename = filename
-	editorRenderRow()
+	editorRenderRows()
 }
 
-func editorRenderRow() {
-	for i := 0; i < len(E.rows); i++ {
-		line := E.rows[i].line
-		// TODO verify \t placement works
-		line = strings.ReplaceAll(line, "\t", TabStop)
-		E.rows[i].render = line
+func editorSave() {
+	if E.filename == EmptyFile {
+		return
 	}
+
+	file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	maybe(err)
+	defer file.Close()
+
+	var size int
+	writer := bufio.NewWriter(file)
+	for _, row := range E.rows {
+		size += len(row.line)
+		writer.WriteString(row.line)
+		writer.WriteString(NewLine)
+	}
+	writer.Flush()
+
+	message := fmt.Sprintf("%d bytes written to disk", size)
+	StatusMessage(message, 5*time.Second)
+
+	E.dirty = false
+}
+
+func editorRenderRows() {
+	for i := 0; i < len(E.rows); i++ {
+		editorRenderRow(&E.rows[i])
+	}
+}
+
+func editorRenderRow(row *EditorRow) {
+	line := row.line
+	// TODO verify \t placement works
+	line = strings.ReplaceAll(line, "\t", TabStop)
+	row.render = line
 }
 
 /* Editor */
@@ -212,6 +245,86 @@ func editorMapArrowKey(key rune) rune {
 	return EscapeChar
 }
 
+func editorInsertRow(at int, line string) {
+	source := E.rows
+	if at < 0 || at > len(source) {
+		return
+	}
+
+	dist := make([]EditorRow, at)
+	copy(dist, source[:at])
+
+	row := EditorRow{line: line}
+	dist = append(dist, row)
+
+	if at < len(source) {
+		dist = append(dist, source[at:]...)
+	}
+
+	editorRenderRow(&dist[at])
+	E.rows = dist
+	E.dirty = true
+}
+
+func editorDeleteRow(at int) {
+	source := E.rows
+	if at < 0 || at > len(source) {
+		return
+	}
+
+	dist := make([]EditorRow, at)
+	copy(dist, source[:at])
+
+	if at < len(source)-1 {
+		dist = append(dist, source[at+1:]...)
+	}
+
+	E.rows = dist
+	E.dirty = true
+}
+
+func editorRowAppendString(row *EditorRow, line string) {
+	row.line = row.line + line
+	editorRenderRow(row)
+
+	E.dirty = true
+}
+
+func editorRowDeleteChar(row *EditorRow, at int) {
+	if at < 0 || at >= len(row.line) {
+		return
+	}
+
+	var builder strings.Builder
+	builder.WriteString(row.line[:at])
+	if at < len(row.line)-1 {
+		builder.WriteString(row.line[at+1:])
+	}
+
+	row.line = builder.String()
+	editorRenderRow(row)
+	E.dirty = true
+}
+
+func editorRowInsertChar(row *EditorRow, at int, char rune) {
+	if at < 0 || at > len(row.line) {
+		at = len(row.line)
+	}
+
+	var builder strings.Builder
+	builder.Write([]byte(row.line[:at]))
+
+	builder.WriteByte(byte(char))
+
+	if at < len(row.line) {
+		builder.Write([]byte(row.line[at:]))
+	}
+	row.line = builder.String()
+
+	editorRenderRow(row)
+	E.dirty = true
+}
+
 func editorDrawRows() {
 	for y := 0; y < E.screenRows; y++ {
 		writeBuf.WriteString(CleanLine)
@@ -257,7 +370,16 @@ func editorDrawWelcome() {
 func editorDrawStatusBar() {
 	writeBuf.WriteString(ColorInverted)
 
-	leftStatus := fmt.Sprintf("%.20s - %d lines", E.filename, len(E.rows))
+	var builder strings.Builder
+	builder.WriteString(E.filename)
+	builder.WriteString(" - ")
+	builder.WriteString(strconv.Itoa(len(E.rows)))
+	builder.WriteString(" lines")
+	if E.dirty {
+		builder.WriteString(" (modified)")
+	}
+
+	leftStatus := builder.String()
 	writeBuf.WriteString(leftStatus)
 	rightStatus := fmt.Sprintf("%d/%d", E.y+1, len(E.rows))
 
@@ -310,13 +432,71 @@ func editorRefreshScreen() {
 	writeBuf.Flush()
 }
 
+func editorInsertNewLine() {
+	if E.x == 0 {
+		editorInsertRow(E.y, "")
+	} else {
+		line := E.rows[E.y].line
+		editorInsertRow(E.y+1, line[E.x:])
+		E.rows[E.y].line = line[:E.x]
+		editorRenderRow(&E.rows[E.y])
+	}
+
+	E.y++
+	E.x = 0
+}
+
+func editorInsertChar(char rune) {
+	if E.y == len(E.rows) {
+		editorInsertRow(len(E.rows), "")
+	}
+	editorRowInsertChar(&E.rows[E.y], E.x, char)
+	E.x++
+}
+
+func editorDeleteChar() {
+	if E.y == len(E.rows) {
+		editorDeleteRow(len(E.rows))
+		E.y--
+		return
+	}
+	if E.x == 0 && E.y == 0 {
+		return
+	}
+
+	row := &E.rows[E.y]
+	if E.x > 0 {
+		editorRowDeleteChar(row, E.x-1)
+		E.x--
+	} else {
+		upRow := &E.rows[E.y-1]
+		E.x = len(upRow.line)
+		editorRowAppendString(upRow, row.line)
+		editorDeleteRow(E.y)
+		E.y--
+	}
+}
+
+var quitTimes = 3
+
 func editorProcessKeyPress() {
 	c := editorReadKey()
 	StatusMessage(string(c), 1*time.Second)
 
 	switch c {
+	case Enter:
+		editorInsertNewLine()
+
 	case ctrlKey('q'):
+		if E.dirty && quitTimes > 0 {
+			message := fmt.Sprintf("WARNING!! File has unsaved changes. Press Ctrl-q %d more times to quit", quitTimes)
+			StatusMessage(message, 5*time.Second)
+			quitTimes--
+			return
+		}
 		exit(0)
+	case ctrlKey('s'):
+		editorSave()
 	case PageUp, PageDown:
 		if c == PageUp {
 			E.y = E.offRow
@@ -341,10 +521,19 @@ func editorProcessKeyPress() {
 			E.x = len(E.rows[E.y].line)
 		}
 	case DelKey:
-
+		editorMoveCursor(ArrowRight)
+		fallthrough
+	case Backspace, ctrlKey('h'):
+		editorDeleteChar()
 	case ArrowUp, ArrowDown, ArrowRight, ArrowLeft:
 		editorMoveCursor(c)
+	case ctrlKey('l'), EscapeChar:
+
+	default:
+		editorInsertChar(c)
 	}
+
+	quitTimes = 3
 }
 
 func readRune() rune {
@@ -512,7 +701,7 @@ func GetCursorPosition() (row int, col int) {
 	// will response <esc>[24;80R
 	exec(CursorPosition)
 
-	buf := strings.Builder{}
+	var buf strings.Builder
 
 	var i int
 	for i < 32 {
