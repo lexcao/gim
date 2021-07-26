@@ -16,8 +16,15 @@ import (
 
 type (
 	EditorRow struct {
-		line   string
-		render string
+		line      string
+		render    string
+		highlight []int
+	}
+
+	EditorSyntax struct {
+		fileType  string
+		fileMatch []string
+		flags     int
 	}
 
 	EditorConfig struct {
@@ -27,6 +34,7 @@ type (
 		screenRows, screenCols int
 		offRow, offCol         int
 		rows                   []EditorRow
+		syntax                 *EditorSyntax
 		dirty                  bool
 		filename               string
 		statusMessage          string
@@ -37,6 +45,30 @@ var (
 	E        = &EditorConfig{}
 	writeBuf = bufio.NewWriter(os.Stdin)
 )
+
+const (
+	HighlightNormal = iota
+	HighlightNumber
+	HighlightMatch
+	HighlightString
+)
+
+const (
+	FlagHighlightNumber = 1 << 0
+	FlagHighlightString = 1 << 1
+)
+
+/* file types */
+
+var SupportHighlightExtensions = []string{".c", ".h", ".cpp"}
+
+var HighlightDatabase = [...]EditorSyntax{
+	{
+		fileType:  "c",
+		fileMatch: SupportHighlightExtensions,
+		flags:     FlagHighlightNumber | FlagHighlightString,
+	},
+}
 
 const (
 	EscapeChar           = '\x1b'
@@ -51,6 +83,7 @@ const (
 	CursorShow           = Escape + "[?25h"
 	ColorInverted        = Escape + "[7m"
 	ColorBack            = Escape + "[m"
+	TextColorDefault     = Escape + "[39m"
 	NewLine              = "\r\n"
 	Tilde                = "~"
 
@@ -121,6 +154,7 @@ func editorOpen(filename string) {
 
 	E.rows = rows
 	E.filename = filename
+	editorSelectSyntaxHighlight()
 	editorRenderRows()
 }
 
@@ -132,6 +166,7 @@ func editorSave() {
 			return
 		}
 		E.filename = filename
+		editorSelectSyntaxHighlight()
 	}
 
 	file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -163,6 +198,120 @@ func editorRenderRow(row *EditorRow) {
 	// TODO verify \t placement works
 	line = strings.ReplaceAll(line, "\t", TabStop)
 	row.render = line
+	editorRenderSyntax(row)
+}
+
+func editorRenderSyntax(row *EditorRow) {
+	row.highlight = make([]int, len(row.render))
+	for i := 0; i < len(row.highlight); i++ {
+		row.highlight[i] = HighlightNormal
+	}
+
+	if E.syntax == nil {
+		return
+	}
+
+	prevSeparator := true
+	prevHighlight := HighlightNormal
+	var inString rune
+
+	var i int
+	var char rune
+
+	for i < len(row.render) {
+		char = rune(row.render[i])
+		if i > 0 {
+			prevHighlight = row.highlight[i-1]
+		} else {
+			prevHighlight = HighlightNormal
+		}
+
+		if E.syntax.flags&FlagHighlightString == 2 {
+			if inString != 0 {
+				row.highlight[i] = HighlightString
+
+				if char == '\\' && i+1 < len(row.render) {
+					row.highlight[i+1] = HighlightString
+					i += 2
+					continue
+				}
+
+				if char == inString {
+					inString = 0
+				}
+				prevSeparator = true
+				i++
+				continue
+			} else {
+				if char == '"' || char == '\'' {
+					inString = char
+					row.highlight[i] = HighlightString
+					i++
+					continue
+				}
+			}
+		}
+
+		if E.syntax.flags&FlagHighlightNumber == 1 {
+			if (unicode.IsDigit(char) &&
+				(prevSeparator || prevHighlight == HighlightNumber)) ||
+				char == '.' && prevHighlight == HighlightNumber {
+				row.highlight[i] = HighlightNumber
+				prevSeparator = false
+				i++
+				continue
+			}
+		}
+
+		prevSeparator = isSeparator(char)
+		i++
+	}
+}
+
+func isSeparator(char rune) bool {
+	return unicode.IsSpace(char) || strings.ContainsRune(",.()+-/*=~%<>{};", char)
+}
+
+func editorSyntaxToColor(hl int) int {
+	switch hl {
+	case HighlightNumber:
+		return 31 // red
+	case HighlightMatch:
+		return 34 // blue
+	case HighlightString:
+		return 36 // blue
+	default:
+		return 37
+	}
+}
+
+func editorSelectSyntaxHighlight() {
+	E.syntax = nil
+	if E.filename == EmptyFile {
+		return
+	}
+
+	dotIdx := strings.LastIndex(E.filename, ".")
+	var ext string
+	if dotIdx != -1 {
+		ext = E.filename[dotIdx:]
+	} else {
+		ext = ""
+	}
+
+	for _, syntax := range HighlightDatabase {
+		for _, match := range syntax.fileMatch {
+			if strings.Contains(match, ext) {
+				E.syntax = &syntax
+
+				for i := 0; i < len(E.rows); i++ {
+					editorRenderSyntax(&E.rows[i])
+				}
+
+				return
+			}
+		}
+	}
 }
 
 /* find */
@@ -177,8 +326,16 @@ func editorFind() {
 
 var lastMatch = -1
 var direction = 1
+var highlightRowIndex = -1
+var highlightRowContent []int
 
 func editorFindCallBack(query string, key rune) {
+
+	if highlightRowIndex != -1 {
+		E.rows[highlightRowIndex].highlight = highlightRowContent
+		highlightRowIndex = -1
+	}
+
 	if key == EndKey || key == EscapeChar {
 		lastMatch = -1
 		direction = 1
@@ -212,6 +369,15 @@ func editorFindCallBack(query string, key rune) {
 			E.y = current
 			E.x = Render2X(&row, match)
 			E.offRow = len(E.rows)
+
+			highlightRowIndex = current
+			highlightRowContent = make([]int, len(row.highlight))
+			copy(highlightRowContent, row.highlight)
+
+			for i := match; i < match+len(query); i++ {
+				row.highlight[i] = HighlightMatch
+			}
+
 			break
 		}
 	}
@@ -432,7 +598,28 @@ func editorDrawRows() {
 			// TODO handle moving horizontally
 			row = row[:l]
 
-			writeBuf.WriteString(row)
+			highlight := E.rows[rowIndex].highlight
+			currentColor := -1
+			var builder strings.Builder
+			for i, char := range row {
+				if highlight[i] == HighlightNormal {
+					if currentColor != -1 {
+						builder.WriteString(TextColorDefault)
+						currentColor = -1
+					}
+				} else {
+					color := editorSyntaxToColor(highlight[i])
+					if color != currentColor {
+						currentColor = color
+						colorText := fmt.Sprintf("%c[%dm", EscapeChar, currentColor)
+						builder.WriteString(colorText)
+					}
+				}
+				builder.WriteByte(byte(char))
+			}
+
+			builder.WriteString(TextColorDefault)
+			writeBuf.WriteString(builder.String())
 		} else {
 			if len(E.rows) == 0 && y == E.screenRows/3 {
 				editorDrawWelcome()
@@ -474,7 +661,20 @@ func editorDrawStatusBar() {
 
 	leftStatus := builder.String()
 	writeBuf.WriteString(leftStatus)
-	rightStatus := fmt.Sprintf("%d/%d", E.y+1, len(E.rows))
+
+	builder.Reset()
+	builder.WriteString(strconv.Itoa(E.y + 1))
+	builder.WriteByte(byte('/'))
+	builder.WriteString(strconv.Itoa(len(E.rows)))
+
+	builder.WriteByte(byte(' '))
+	if E.syntax != nil {
+		builder.WriteString(E.syntax.fileType)
+	} else {
+		builder.WriteString("no ft")
+	}
+
+	rightStatus := builder.String()
 
 	// padding middle
 	for i := len(leftStatus); i < E.screenCols-len(rightStatus); i++ {
