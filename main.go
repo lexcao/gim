@@ -87,7 +87,7 @@ func main() {
 		//editorOpen("test.txt")
 	}
 
-	StatusMessage("HELP: Ctrl-s = save | Ctrl-q = quit", 5*time.Second)
+	StatusMessage("HELP: Ctrl-s = save | Ctrl-q = quit | Ctrl-F = find")
 
 	for {
 		editorRefreshScreen()
@@ -96,6 +96,7 @@ func main() {
 }
 
 /* init */
+
 func initEditor() {
 	E.screenRows, E.screenCols = GetWindowSize()
 	E.screenRows -= 2 // 1 for status bar, 1 for status message
@@ -125,9 +126,9 @@ func editorOpen(filename string) {
 
 func editorSave() {
 	if E.filename == EmptyFile {
-		filename := editorPrompt("Save as: ")
-		if filename == EmptyFile {
-			StatusMessage("Save aborted", 3*time.Second)
+		filename, ok := editorPrompt("Save as: ", nil)
+		if !ok {
+			StatusMessage("Save aborted")
 			return
 		}
 		E.filename = filename
@@ -146,8 +147,7 @@ func editorSave() {
 	}
 	writer.Flush()
 
-	message := fmt.Sprintf("%d bytes written to disk", size)
-	StatusMessage(message, 5*time.Second)
+	StatusMessage("%d bytes written to disk", size)
 
 	E.dirty = false
 }
@@ -163,6 +163,60 @@ func editorRenderRow(row *EditorRow) {
 	// TODO verify \t placement works
 	line = strings.ReplaceAll(line, "\t", TabStop)
 	row.render = line
+}
+
+/* find */
+func editorFind() {
+	lastX, lastY := E.x, E.y
+	lastOffCol, lastOffRow := E.offCol, E.offRow
+	editorPrompt("Search: %s (Use ESC/Arrows/Enter)", editorFindCallBack)
+
+	E.x, E.y = lastX, lastY
+	E.offCol, E.offRow = lastOffCol, lastOffRow
+}
+
+var lastMatch = -1
+var direction = 1
+
+func editorFindCallBack(query string, key rune) {
+	if key == EndKey || key == EscapeChar {
+		lastMatch = -1
+		direction = 1
+		return
+	} else if key == ArrowRight || key == ArrowDown {
+		direction = 1
+	} else if key == ArrowLeft || key == ArrowUp {
+		direction = -1
+	} else {
+		lastMatch = -1
+		direction = 1
+	}
+
+	if lastMatch == -1 {
+		direction = 1
+	}
+	current := lastMatch
+
+	for range E.rows {
+		current += direction
+		if current == -1 {
+			current = len(E.rows) - 1
+		} else if current == len(E.rows) {
+			current = 0
+		}
+
+		row := E.rows[current]
+		match := strings.Index(row.render, query)
+		if match != -1 {
+			lastMatch = current
+			E.y = current
+			E.x = Render2X(&row, match)
+			E.offRow = len(E.rows)
+			break
+		}
+	}
+
+	StatusMessage("Not found %s", query)
 }
 
 /* Editor */
@@ -251,26 +305,35 @@ func editorMapArrowKey(key rune) rune {
 	return EscapeChar
 }
 
-func editorPrompt(prompt string) string {
+func editorPrompt(prompt string, callback func(string, rune)) (string, bool) {
 	var buffer strings.Builder
 
 	for {
-		StatusMessage(prompt+buffer.String(), 10*time.Second)
+		StatusMessage(prompt, buffer.String())
 		editorRefreshScreen()
 
 		char := editorReadKey()
 		if char == Enter {
-			StatusMessage("", 1*time.Second)
-			return buffer.String()
+			StatusMessage("")
+			if callback != nil {
+				callback(buffer.String(), char)
+			}
+			return buffer.String(), true
 		} else if char == DelKey || char == ctrlKey('h') || char == Backspace {
 			last := buffer.String()[:buffer.Len()-1]
 			buffer = strings.Builder{}
 			buffer.WriteString(last)
 		} else if char == EscapeChar {
-			StatusMessage("", 1*time.Second)
-			return EmptyFile
+			StatusMessage("")
+			if callback != nil {
+				callback(buffer.String(), char)
+			}
+			return "", false
 		} else if !unicode.IsControl(char) && char < 128 {
 			buffer.WriteRune(char)
+		}
+		if callback != nil {
+			callback(buffer.String(), char)
 		}
 	}
 }
@@ -424,11 +487,11 @@ func editorDrawStatusBar() {
 	writeBuf.WriteString(ColorBack)
 }
 
-func StatusMessage(message string, duration time.Duration) {
-	E.statusMessage = message
+func StatusMessage(format string, arg ...interface{}) {
+	E.statusMessage = fmt.Sprintf(format, arg...)
 	go func() {
 		select {
-		case <-time.After(duration):
+		case <-time.After(5 * time.Second):
 			E.statusMessage = ""
 		}
 	}()
@@ -511,7 +574,7 @@ var quitTimes = 3
 
 func editorProcessKeyPress() {
 	c := editorReadKey()
-	StatusMessage(string(c), 1*time.Second)
+	StatusMessage(string(c))
 
 	switch c {
 	case Enter:
@@ -519,14 +582,15 @@ func editorProcessKeyPress() {
 
 	case ctrlKey('q'):
 		if E.dirty && quitTimes > 0 {
-			message := fmt.Sprintf("WARNING!! File has unsaved changes. Press Ctrl-q %d more times to quit", quitTimes)
-			StatusMessage(message, 5*time.Second)
+			StatusMessage("WARNING!! File has unsaved changes. Press Ctrl-q %d more times to quit", quitTimes)
 			quitTimes--
 			return
 		}
 		exit(0)
 	case ctrlKey('s'):
 		editorSave()
+	case ctrlKey('f'):
+		editorFind()
 	case PageUp, PageDown:
 		if c == PageUp {
 			E.y = E.offRow
@@ -770,6 +834,20 @@ func GetWindowSize() (int, int) {
 
 /* Utils */
 
+func Render2X(row *EditorRow, render int) int {
+	var curRender, x int
+	for ; x < len(row.line); x++ {
+		if row.line[x] == '\t' {
+			curRender += 3
+		}
+		curRender++
+
+		if curRender > render {
+			return x
+		}
+	}
+	return x
+}
 func X2Render(row *EditorRow, x int) int {
 	var render int
 	for j := 0; j < x; j++ {
