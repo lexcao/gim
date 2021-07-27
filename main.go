@@ -16,15 +16,21 @@ import (
 
 type (
 	EditorRow struct {
-		line      string
-		render    string
-		highlight []int
+		idx           int
+		line          string
+		render        string
+		highlight     []int
+		hlOpenComment bool
 	}
 
 	EditorSyntax struct {
-		fileType  string
-		fileMatch []string
-		flags     int
+		fileType               string
+		fileMatch              []string
+		keywords               []string
+		singleLineCommentStart string
+		multilineCommentStart  string
+		multilineCommentEnd    string
+		flags                  int
 	}
 
 	EditorConfig struct {
@@ -51,6 +57,10 @@ const (
 	HighlightNumber
 	HighlightMatch
 	HighlightString
+	HighlightComment
+	HighlightMultilineComment
+	HighLightKeyword1
+	HighLightKeyword2
 )
 
 const (
@@ -60,13 +70,23 @@ const (
 
 /* file types */
 
-var SupportHighlightExtensions = []string{".c", ".h", ".cpp"}
+var CSupportHighlightExtensions = []string{".c", ".h", ".cpp"}
+var CHighlightKeywords = []string{
+	"switch", "if", "while", "for", "break", "continue", "return",
+	"else", "struct", "union", "typedef", "static", "enum", "class", "case",
+
+	"int|", "long|", "double|", "float|", "char|", "unsigned|", "signed", "void|",
+}
 
 var HighlightDatabase = [...]EditorSyntax{
 	{
-		fileType:  "c",
-		fileMatch: SupportHighlightExtensions,
-		flags:     FlagHighlightNumber | FlagHighlightString,
+		fileType:               "c",
+		fileMatch:              CSupportHighlightExtensions,
+		singleLineCommentStart: "//",
+		multilineCommentStart:  "/*",
+		multilineCommentEnd:    "*/",
+		flags:                  FlagHighlightNumber | FlagHighlightString,
+		keywords:               CHighlightKeywords,
 	},
 }
 
@@ -211,9 +231,15 @@ func editorRenderSyntax(row *EditorRow) {
 		return
 	}
 
+	comment := E.syntax.singleLineCommentStart
+	keywords := E.syntax.keywords
+	mcs := E.syntax.multilineCommentStart
+	mce := E.syntax.multilineCommentEnd
+
 	prevSeparator := true
 	prevHighlight := HighlightNormal
 	var inString rune
+	inComment := row.idx > 0 && E.rows[row.idx-1].hlOpenComment
 
 	var i int
 	var char rune
@@ -224,6 +250,42 @@ func editorRenderSyntax(row *EditorRow) {
 			prevHighlight = row.highlight[i-1]
 		} else {
 			prevHighlight = HighlightNormal
+		}
+
+		if comment != "" && inString == 0 && !inComment {
+			if strings.HasPrefix(row.render[i:], comment) {
+				for ; i < len(row.render); i++ {
+					row.highlight[i] = HighlightComment
+				}
+				break
+			}
+		}
+
+		if mcs != "" && mce != "" && inString == 0 {
+			if inComment {
+				row.highlight[i] = HighlightMultilineComment
+				if strings.HasPrefix(row.render[i:], mce) {
+					for j := i; j < i+len(mce); j++ {
+						row.highlight[j] = HighlightMultilineComment
+					}
+
+					i += len(mce)
+					inComment = false
+					prevSeparator = true
+					continue
+				} else {
+					i++
+					continue
+				}
+			} else if strings.HasPrefix(row.render[i:], mcs) {
+				for j := i; j < i+len(mcs); j++ {
+					row.highlight[j] = HighlightMultilineComment
+				}
+
+				i += len(mcs)
+				inComment = true
+				continue
+			}
 		}
 
 		if E.syntax.flags&FlagHighlightString == 2 {
@@ -263,8 +325,52 @@ func editorRenderSyntax(row *EditorRow) {
 			}
 		}
 
+		if prevSeparator {
+			lastKeyword := -1
+			var keyword string
+
+			for lastKeyword, keyword = range keywords {
+				keywordLen := len(keyword)
+				isKeyword2 := keyword[keywordLen-1] == '|'
+				if isKeyword2 {
+					keywordLen--
+					keyword = keyword[:keywordLen]
+				}
+
+				// 1. starts with keyword
+				// 2. at end of line
+				// 3. valid separator
+				if strings.HasPrefix(row.render[i:], keyword) &&
+					((i+keywordLen < len(row.render) &&
+						isSeparator(rune(row.render[i+keywordLen]))) ||
+						i+keywordLen == len(row.render)) {
+					for j := i; j < i+keywordLen; j++ {
+						if isKeyword2 {
+							row.highlight[j] = HighLightKeyword2
+						} else {
+							row.highlight[j] = HighLightKeyword1
+						}
+					}
+					i += keywordLen
+					break
+				}
+
+			}
+
+			if lastKeyword != len(keywords)-1 {
+				prevSeparator = false
+				continue
+			}
+		}
+
 		prevSeparator = isSeparator(char)
 		i++
+	}
+
+	changed := row.hlOpenComment != inComment
+	row.hlOpenComment = inComment
+	if changed && row.idx+1 < len(E.rows) {
+		editorRenderSyntax(&E.rows[row.idx+1])
 	}
 }
 
@@ -279,7 +385,13 @@ func editorSyntaxToColor(hl int) int {
 	case HighlightMatch:
 		return 34 // blue
 	case HighlightString:
-		return 36 // blue
+		return 35 // magenta
+	case HighlightComment, HighlightMultilineComment:
+		return 36 // cyan
+	case HighLightKeyword1:
+		return 33 // yellow
+	case HighLightKeyword2:
+		return 32 // green
 	default:
 		return 37
 	}
@@ -521,6 +633,10 @@ func editorInsertRow(at int, line string) {
 	}
 
 	editorRenderRow(&dist[at])
+	for j := at + 1; j <= len(E.rows); j++ {
+		E.rows[j].idx++
+	}
+	E.rows[at].idx = at
 	E.rows = dist
 	E.dirty = true
 }
@@ -538,6 +654,9 @@ func editorDeleteRow(at int) {
 		dist = append(dist, source[at+1:]...)
 	}
 
+	for j := at; j < len(E.rows)-1; j++ {
+		E.rows[j].idx--
+	}
 	E.rows = dist
 	E.dirty = true
 }
@@ -602,6 +721,22 @@ func editorDrawRows() {
 			currentColor := -1
 			var builder strings.Builder
 			for i, char := range row {
+				if unicode.IsControl(char) {
+					var symbol rune
+					if char <= 26 {
+						symbol = '@'
+					} else {
+						symbol = '?'
+					}
+					writeBuf.WriteString(ColorInverted)
+					writeBuf.WriteByte(byte(symbol))
+					writeBuf.WriteString(ColorBack)
+					if currentColor != -1 {
+						colorText := fmt.Sprintf("%c[%dm", EscapeChar, currentColor)
+						builder.WriteString(colorText)
+					}
+					continue
+				}
 				if highlight[i] == HighlightNormal {
 					if currentColor != -1 {
 						builder.WriteString(TextColorDefault)
