@@ -622,21 +622,23 @@ func editorInsertRow(at int, line string) {
 		return
 	}
 
-	dist := make([]EditorRow, at)
-	copy(dist, source[:at])
+	dist := make([]EditorRow, len(source)+1)
 
-	row := EditorRow{line: line}
-	dist = append(dist, row)
-
-	if at < len(source) {
-		dist = append(dist, source[at:]...)
+	var current EditorRow
+	for i := 0; i < len(dist); i++ {
+		if i < at {
+			current = source[i]
+		} else if i > at {
+			current = source[i-1]
+		} else {
+			current = EditorRow{line: line}
+		}
+		current.idx = i
+		dist[i] = current
 	}
 
 	editorRenderRow(&dist[at])
-	for j := at + 1; j <= len(E.rows); j++ {
-		E.rows[j].idx++
-	}
-	E.rows[at].idx = at
+
 	E.rows = dist
 	E.dirty = true
 }
