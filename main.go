@@ -1051,12 +1051,29 @@ func editorReadMoreKey() rune {
 /* Terminal */
 
 func EnableRawMode() {
-	origin := tcGetAttr(syscall.Stdin)
-	E.originTermios = origin
+	E.originTermios = tcGetAttr(syscall.Stdin)
 
-	raw := SetRawTermios(*origin)
+	var raw syscall.Termios
+	raw = *E.originTermios
+	raw.Lflag &^= syscall.ECHO | // echo the input
+		syscall.ICANON | // disable canonical mode
+		syscall.ISIG | // disable C-C and C-Z
+		syscall.IEXTEN // disable C-V, and fix C-O
 
-	tcSetAttr(syscall.Stdin, raw)
+	raw.Iflag &^= syscall.IXON | // disable C-S and C-Q
+		syscall.ICRNL | // fix C-M, carriage return and new line
+		syscall.BRKINT | // disable break SIGINT signal
+		syscall.INPCK | // disable parity checking
+		syscall.ISTRIP // 8th bit of each input byte
+
+	raw.Oflag &^= syscall.OPOST // disable post processing of output
+
+	raw.Cflag |= syscall.CS8 // set character size to 8 bits per byte
+
+	raw.Cc[syscall.VMIN] = 0  // minimum number of bytes of input
+	raw.Cc[syscall.VTIME] = 1 // maximum amount of time to wait, current 1 / 10
+
+	tcSetAttr(syscall.Stdin, &raw)
 }
 
 func DisableRawMode() {
@@ -1100,27 +1117,6 @@ func ioctlGetWinSize(ws *WinSize) syscall.Errno {
 		uintptr(unsafe.Pointer(&ws)),
 	)
 	return errNo
-}
-
-func SetRawTermios(term syscall.Termios) *syscall.Termios {
-	term.Lflag &^= syscall.ECHO | // echo the input
-		syscall.ICANON | // disable canonical mode
-		syscall.ISIG | // disable C-C and C-Z
-		syscall.IEXTEN // disable C-V, and fix C-O
-
-	term.Iflag &^= syscall.IXON | // disable C-S and C-Q
-		syscall.ICRNL | // fix C-M, carriage return and new line
-		syscall.BRKINT | // disable break SIGINT signal
-		syscall.INPCK | // disable parity checking
-		syscall.ISTRIP // 8th bit of each input byte
-
-	term.Oflag &^= syscall.OPOST // disable post processing of output
-
-	term.Cflag |= syscall.CS8 // set character size to 8 bits per byte
-
-	term.Cc[syscall.VMIN] = 0  // minimum number of bytes of input
-	term.Cc[syscall.VTIME] = 1 // maximum amount of time to wait, current 1 / 10
-	return &term
 }
 
 type WinSize struct {
@@ -1216,5 +1212,6 @@ func maybe(err error) {
 func exit(code int) {
 	_, _ = os.Stdout.WriteString(CleanScreen + CursorReposition)
 
+	DisableRawMode()
 	os.Exit(code)
 }
