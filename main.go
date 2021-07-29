@@ -136,8 +136,6 @@ func main() {
 	initEditor()
 	if len(os.Args) > 1 {
 		editorOpen(os.Args[1])
-	} else {
-		//editorOpen("test.txt")
 	}
 
 	StatusMessage("HELP: Ctrl-s = save | Ctrl-q = quit | Ctrl-F = find")
@@ -166,7 +164,6 @@ func editorOpen(filename string) {
 	var rows []EditorRow
 	reader := bufio.NewReader(file)
 
-	// TODO determine \t is read properly
 	for line, isPrefix, err := reader.ReadLine(); isPrefix || err == nil; {
 		rows = append(rows, EditorRow{line: string(line)})
 		line, isPrefix, err = reader.ReadLine()
@@ -215,7 +212,6 @@ func editorRenderRows() {
 
 func editorRenderRow(row *EditorRow) {
 	line := row.line
-	// TODO verify \t placement works
 	line = strings.ReplaceAll(line, "\t", TabStop)
 	row.render = line
 	editorRenderSyntax(row)
@@ -715,51 +711,52 @@ func editorDrawRows() {
 		rowIndex := y + E.offRow
 		if rowIndex < len(E.rows) {
 			row := E.rows[rowIndex].render
-			l := len(row)
-			if l > E.screenCols {
-				l = E.screenCols
+			l := len(row) - E.offCol
+			if l < 0 {
+				l = 0
 			}
-			// TODO handle moving horizontally
-			row = row[:l]
+			if l > 0 {
+				if l > E.screenCols {
+					l = E.screenCols
+				}
+				row = row[E.offCol : E.offCol+l]
 
-			highlight := E.rows[rowIndex].highlight
-			currentColor := -1
-			var builder strings.Builder
-			for i, char := range row {
-				if unicode.IsControl(char) {
-					var symbol rune
-					if char <= 26 {
-						symbol = '@'
+				highlight := E.rows[rowIndex].highlight[E.offCol : E.offCol+l]
+				currentColor := -1
+				for i, char := range row {
+					if unicode.IsControl(char) {
+						var symbol rune
+						if char <= 26 {
+							symbol = '@'
+						} else {
+							symbol = '?'
+						}
+						writeBuf.WriteString(ColorInverted)
+						writeBuf.WriteByte(byte(symbol))
+						writeBuf.WriteString(ColorBack)
+						if currentColor != -1 {
+							colorText := fmt.Sprintf("%c[%dm", EscapeChar, currentColor)
+							writeBuf.WriteString(colorText)
+						}
+						continue
+					}
+					if highlight[i] == HighlightNormal {
+						if currentColor != -1 {
+							writeBuf.WriteString(TextColorDefault)
+							currentColor = -1
+						}
 					} else {
-						symbol = '?'
+						color := editorSyntaxToColor(highlight[i])
+						if color != currentColor {
+							currentColor = color
+							colorText := fmt.Sprintf("%c[%dm", EscapeChar, currentColor)
+							writeBuf.WriteString(colorText)
+						}
 					}
-					writeBuf.WriteString(ColorInverted)
-					writeBuf.WriteByte(byte(symbol))
-					writeBuf.WriteString(ColorBack)
-					if currentColor != -1 {
-						colorText := fmt.Sprintf("%c[%dm", EscapeChar, currentColor)
-						builder.WriteString(colorText)
-					}
-					continue
+					writeBuf.WriteByte(byte(char))
 				}
-				if highlight[i] == HighlightNormal {
-					if currentColor != -1 {
-						builder.WriteString(TextColorDefault)
-						currentColor = -1
-					}
-				} else {
-					color := editorSyntaxToColor(highlight[i])
-					if color != currentColor {
-						currentColor = color
-						colorText := fmt.Sprintf("%c[%dm", EscapeChar, currentColor)
-						builder.WriteString(colorText)
-					}
-				}
-				builder.WriteByte(byte(char))
+				writeBuf.WriteString(TextColorDefault)
 			}
-
-			builder.WriteString(TextColorDefault)
-			writeBuf.WriteString(builder.String())
 		} else {
 			if len(E.rows) == 0 && y == E.screenRows/3 {
 				editorDrawWelcome()
@@ -1145,10 +1142,6 @@ func GetCursorPosition() (row int, col int) {
 
 	response := buf.String()[2:]
 	fmt.Sscanf(response, "%d;%d", &row, &col)
-
-	//fmt.Printf("\r\n buf: '%q' \r\n", response)
-	//fmt.Printf("row: %d, col: %d", row, col)
-
 	return
 }
 
@@ -1174,7 +1167,7 @@ func Render2X(row *EditorRow, render int) int {
 	var curRender, x int
 	for ; x < len(row.line); x++ {
 		if row.line[x] == '\t' {
-			curRender += 3
+			curRender += len(TabStop) - 1
 		}
 		curRender++
 
@@ -1188,7 +1181,7 @@ func X2Render(row *EditorRow, x int) int {
 	var render int
 	for j := 0; j < x; j++ {
 		if row.line[j] == '\t' {
-			render += 3
+			render += len(TabStop) - 1
 		}
 		render++
 	}
