@@ -180,7 +180,7 @@ func editorOpen(filename string) {
 
 func editorSave() {
 	if E.filename == EmptyFile {
-		filename, ok := editorPrompt("Save as: ", nil)
+		filename, ok := editorPrompt("Save as: %s", nil)
 		if !ok {
 			StatusMessage("Save aborted")
 			return
@@ -598,6 +598,9 @@ func editorPrompt(prompt string, callback func(string, rune)) (string, bool) {
 			}
 			return buffer.String(), true
 		} else if char == DelKey || char == ctrlKey('h') || char == Backspace {
+			if buffer.Len() == 0 {
+				continue
+			}
 			last := buffer.String()[:buffer.Len()-1]
 			buffer = strings.Builder{}
 			buffer.WriteString(last)
