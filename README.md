@@ -1,6 +1,6 @@
 # Gim
 
-Go vim like terminal text editor.
+Go terminal text editor.
 
 A go version implementation on [kilo](https://github.com/antirez/kilo) by the
 tutorial [Build Your Own Text Editor](https://viewsourcecode.org/snaptoken/kilo/index.html).
