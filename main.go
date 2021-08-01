@@ -84,8 +84,21 @@ var GoHighlightKeywords = []string{
 	"case", "defer", "go", "else", "goto", "package", "switch",
 	"fallthrough", "if", "range", "continue", "for", "import", "return",
 
-	"type|", "var|", "chan|", "bool|", "map|", "struct|", "const|", "int|", "string|",
-	"rune|", "byte|", "float64|", "float32|", "int8|", "int16|", "int32|", "int64|",
+	"true|", "false|", "type|", "var|", "chan|", "bool|",
+	"map|", "struct|", "const|", "int|", "string|", "rune|", "byte|",
+	"float64|", "float32|", "int8|", "int16|", "int32|", "int64|",
+}
+
+var JavaSupportHighlightExtensions = []string{".java"}
+var JavaHighlightKeywords = []string{
+	"abstract", "continue", "for", "new", "switch",
+	"assert", "default", "goto", "package", "synchronized",
+	"do", "if", "private", "this", "break", "implements", "protected", "throw",
+	"else", "import", "public", "throws", "case", "enum", "instanceof", "return", "transient", "catch", "extends",
+	"try", "final", "interface", "static", "void|", "class", "finally",
+	"strictfp", "volatile", "native", "super", "while",
+
+	"float|", "true|", "false|", "long|", "char|", "int|", "short|", "byte|", "double|", "boolean|",
 }
 
 var HighlightDatabase = [...]EditorSyntax{
@@ -106,6 +119,15 @@ var HighlightDatabase = [...]EditorSyntax{
 		multilineCommentEnd:    "*/",
 		flags:                  FlagHighlightNumber | FlagHighlightString,
 		keywords:               GoHighlightKeywords,
+	},
+	{
+		fileType:               "java",
+		fileMatch:              JavaSupportHighlightExtensions,
+		singleLineCommentStart: "//",
+		multilineCommentStart:  "/*",
+		multilineCommentEnd:    "*/",
+		flags:                  FlagHighlightNumber | FlagHighlightString,
+		keywords:               JavaHighlightKeywords,
 	},
 }
 
