@@ -78,6 +78,16 @@ var CHighlightKeywords = []string{
 	"int|", "long|", "double|", "float|", "char|", "unsigned|", "signed", "void|",
 }
 
+var GoSupportHighlightExtensions = []string{".go"}
+var GoHighlightKeywords = []string{
+	"break", "default", "func", "interface", "select",
+	"case", "defer", "go", "else", "goto", "package", "switch",
+	"fallthrough", "if", "range", "continue", "for", "import", "return",
+
+	"type|", "var|", "chan|", "bool|", "map|", "struct|", "const|", "int|", "string|",
+	"rune|", "byte|", "float64|", "float32|", "int8|", "int16|", "int32|", "int64|",
+}
+
 var HighlightDatabase = [...]EditorSyntax{
 	{
 		fileType:               "c",
@@ -87,6 +97,15 @@ var HighlightDatabase = [...]EditorSyntax{
 		multilineCommentEnd:    "*/",
 		flags:                  FlagHighlightNumber | FlagHighlightString,
 		keywords:               CHighlightKeywords,
+	},
+	{
+		fileType:               "go",
+		fileMatch:              GoSupportHighlightExtensions,
+		singleLineCommentStart: "//",
+		multilineCommentStart:  "/*",
+		multilineCommentEnd:    "*/",
+		flags:                  FlagHighlightNumber | FlagHighlightString,
+		keywords:               GoHighlightKeywords,
 	},
 }
 
